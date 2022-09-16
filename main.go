@@ -119,9 +119,7 @@ func udp() {
 	defer conn.Close()
 	log.Println("udp run")
 	var (
-		buf      = make([]byte, 512)
-		msgCache = make(map[uint16]cache)
-		lock     sync.Mutex
+		buf = make([]byte, 512)
 	)
 
 	for {
@@ -136,76 +134,27 @@ func udp() {
 			continue
 		}
 
-		go func(addr *net.UDPAddr, conn *net.UDPConn, msg *dnsmessage.Message) {
-			// 上游查询的结果
-			if msg.Header.Response {
-				defer msgPool.Put(msg)
-				lock.Lock()
-				defer lock.Unlock()
-				if data, ok := msgCache[msg.ID]; ok {
-					data.msg.Answers = append(data.msg.Answers, msg.Answers...)
-					data.question -= 1
-					if data.question == 0 {
-						dnsData, _ := data.msg.Pack()
-						data.msg.Response = true
-						conn.WriteTo(dnsData, data.addr)
-						delete(msgCache, msg.ID)
-						return
-					}
-					msgCache[msg.ID] = data
-				}
-				return
-			}
-
-			for _, question := range msg.Questions {
-				switch question.Type {
-				case dnsmessage.TypeA:
-					mu.RLock()
-					ip, ok := cacheHost[question.Name.String()]
-					mu.RUnlock()
-					if ok {
-						log.Println(addr.String(), "->", question.Name.String(), ip)
-						msg.Answers = append(msg.Answers, dnsmessage.Resource{
-							Header: dnsmessage.ResourceHeader{
-								Name:  question.Name,
-								Class: question.Class,
-								TTL:   600,
-							},
-							Body: &dnsmessage.AResource{A: ip},
-						})
-						continue
+		if msg.Header.Response {
+			go func(addr *net.UDPAddr, conn *net.UDPConn, msg *dnsmessage.Message) {
+				for i, v := range msg.Answers {
+					switch v.Header.Type {
+					case dnsmessage.TypeA:
+						mu.RLock()
+						ip, ok := cacheHost[v.Header.Name.String()]
+						mu.RUnlock()
+						if ok {
+							log.Println(addr.String(), "->", v.Header.Name.String(), ip)
+							msg.Answers[i].Body = &dnsmessage.AResource{A: ip}
+							continue
+						}
 					}
 				}
-				lock.Lock()
-				// 查询上游服务器
-				c, ok := msgCache[msg.ID]
-				if !ok {
-					c = cache{
-						msg:      msg,
-						addr:     addr,
-						question: 1,
-					}
-				} else {
-					c.question += 1
-				}
-				msgCache[msg.ID] = c
-				lock.Unlock()
-				queryRemote := *msg
-				queryRemote.Questions = []dnsmessage.Question{question}
-
-				data, _ := queryRemote.Pack()
-				conn.WriteTo(data, &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
-			}
-			lock.Lock()
-			if _, ok := msgCache[msg.ID]; !ok && !msg.Response {
-				msg.Response = true
 				data, _ := msg.Pack()
 				conn.WriteTo(data, addr)
-				msgPool.Put(msg)
-			}
-			defer lock.Unlock()
-
-		}(addr, conn, msg)
+			}(addr, conn, msg)
+		} else {
+			conn.WriteTo(buf[:n], &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
+		}
 	}
 }
 
