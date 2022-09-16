@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"flag"
-	"github.com/Rehtt/Kit/link"
+	"github.com/Rehtt/Kit/channel"
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/dns/dnsmessage"
 	"gopkg.in/ini.v1"
@@ -114,8 +114,8 @@ func udp() {
 	defer conn.Close()
 	log.Println("udp run")
 	var (
-		buf   = make([]byte, 512)
-		addrs = link.NewDLink()
+		buf      = make([]byte, 512)
+		dataChan = channel.New()
 	)
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
@@ -132,14 +132,13 @@ func udp() {
 		go func(addr *net.UDPAddr, conn *net.UDPConn, msg *dnsmessage.Message) {
 			defer msgPool.Put(msg)
 
-			data, _ := msg.Pack()
 			// 返回上游查询的结果
 			if msg.Header.Response {
-				conn.WriteTo(data, addrs.Pull().(*net.UDPAddr))
+				dataChan.In <- msg.Answers
 				return
 			}
 
-			for _, question := range msg.Questions {
+			for i, question := range msg.Questions {
 				switch question.Type {
 				case dnsmessage.TypeA:
 					mu.RLock()
@@ -155,16 +154,20 @@ func udp() {
 							},
 							Body: &dnsmessage.AResource{A: ip},
 						})
-						msg.Response = true
-						data, _ := msg.Pack()
-						conn.WriteTo(data, addr)
 						continue
 					}
 				}
+
 				// 查询上游服务器
+				queryRemote := *msg
+				queryRemote.Questions = []dnsmessage.Question{msg.Questions[i]}
+				data, _ := queryRemote.Pack()
 				conn.WriteTo(data, &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
-				addrs.Push(addr)
+				msg.Answers = append(msg.Answers, (<-dataChan.Out).([]dnsmessage.Resource)...)
 			}
+			msg.Response = true
+			data, _ := msg.Pack()
+			conn.WriteTo(data, addr)
 
 		}(addr, conn, msg)
 	}
