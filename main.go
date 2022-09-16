@@ -120,6 +120,8 @@ func udp() {
 	log.Println("udp run")
 	var (
 		buf = make([]byte, 512)
+
+		msgCache sync.Map
 	)
 
 	for {
@@ -135,7 +137,12 @@ func udp() {
 		}
 
 		if msg.Header.Response {
-			go func(addr *net.UDPAddr, conn *net.UDPConn, msg *dnsmessage.Message) {
+			go func(conn *net.UDPConn, msg *dnsmessage.Message) {
+				a, ok := msgCache.LoadAndDelete(msg.ID)
+				if !ok {
+					return
+				}
+				addr := a.(*net.UDPAddr)
 				for i, v := range msg.Answers {
 					switch v.Header.Type {
 					case dnsmessage.TypeA:
@@ -151,8 +158,9 @@ func udp() {
 				}
 				data, _ := msg.Pack()
 				conn.WriteTo(data, addr)
-			}(addr, conn, msg)
+			}(conn, msg)
 		} else {
+			msgCache.Store(msg.ID, addr)
 			conn.WriteTo(buf[:n], &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
 		}
 	}
