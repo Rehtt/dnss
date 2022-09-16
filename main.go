@@ -137,7 +137,7 @@ func udp() {
 		}
 
 		if msg.Header.Response {
-			go func(conn *net.UDPConn, msg *dnsmessage.Message) {
+			go func(msg *dnsmessage.Message) {
 				a, ok := msgCache.LoadAndDelete(msg.ID)
 				if !ok {
 					return
@@ -151,6 +151,7 @@ func udp() {
 						mu.RUnlock()
 						if ok {
 							log.Println(addr.String(), "->", v.Header.Name.String(), ip)
+							msg.Answers[i].Header.TTL = 10
 							msg.Answers[i].Body = &dnsmessage.AResource{A: ip}
 							continue
 						}
@@ -158,7 +159,7 @@ func udp() {
 				}
 				data, _ := msg.Pack()
 				conn.WriteTo(data, addr)
-			}(conn, msg)
+			}(msg)
 		} else {
 			msgCache.Store(msg.ID, addr)
 			conn.WriteTo(buf[:n], &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
