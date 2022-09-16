@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"flag"
-	"github.com/Rehtt/Kit/channel"
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/dns/dnsmessage"
 	"gopkg.in/ini.v1"
@@ -13,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -20,8 +20,8 @@ var (
 	msgPool  = sync.Pool{New: func() any {
 		return new(dnsmessage.Message)
 	}}
-	cache = make(map[string][4]byte)
-	mu    sync.RWMutex
+	cacheHost = make(map[string][4]byte)
+	mu        sync.RWMutex
 )
 
 func init() {
@@ -106,6 +106,12 @@ func readAll(reader io.Reader) ([]byte, error) {
 	}
 }
 
+type cache struct {
+	msg      *dnsmessage.Message
+	addr     *net.UDPAddr
+	question *int32
+}
+
 func udp() {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 53})
 	if err != nil {
@@ -114,9 +120,11 @@ func udp() {
 	defer conn.Close()
 	log.Println("udp run")
 	var (
-		buf      = make([]byte, 512)
-		dataChan = channel.New()
+		buf = make([]byte, 512)
+		//dataChan = channel.New()
+		msgCache = make(map[uint16]*cache)
 	)
+
 	for {
 		n, addr, err := conn.ReadFromUDP(buf)
 		if err != nil {
@@ -130,11 +138,20 @@ func udp() {
 		}
 
 		go func(addr *net.UDPAddr, conn *net.UDPConn, msg *dnsmessage.Message) {
-			defer msgPool.Put(msg)
-
-			// 返回上游查询的结果
+			// 上游查询的结果
 			if msg.Header.Response {
-				dataChan.In <- msg.Answers
+				defer msgPool.Put(msg)
+				if data, ok := msgCache[msg.ID]; ok {
+					data.msg.Answers = append(data.msg.Answers, msg.Answers...)
+					atomic.AddInt32(data.question, -1)
+					if atomic.LoadInt32(data.question) == 0 {
+						dnsData, _ := data.msg.Pack()
+						data.msg.Response = true
+						conn.WriteTo(dnsData, data.addr)
+						delete(msgCache, msg.ID)
+						return
+					}
+				}
 				return
 			}
 
@@ -142,7 +159,7 @@ func udp() {
 				switch question.Type {
 				case dnsmessage.TypeA:
 					mu.RLock()
-					ip, ok := cache[question.Name.String()]
+					ip, ok := cacheHost[question.Name.String()]
 					mu.RUnlock()
 					if ok {
 						log.Println(addr.String(), "->", question.Name.String(), ip)
@@ -159,15 +176,27 @@ func udp() {
 				}
 
 				// 查询上游服务器
+				c, ok := msgCache[msg.ID]
+				if !ok {
+					c = &cache{
+						msg:      msg,
+						addr:     addr,
+						question: new(int32),
+					}
+					msgCache[msg.ID] = c
+				}
+				atomic.AddInt32(c.question, 1)
 				queryRemote := *msg
 				queryRemote.Questions = []dnsmessage.Question{msg.Questions[i]}
 				data, _ := queryRemote.Pack()
 				conn.WriteTo(data, &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
-				msg.Answers = append(msg.Answers, (<-dataChan.Out).([]dnsmessage.Resource)...)
 			}
-			msg.Response = true
-			data, _ := msg.Pack()
-			conn.WriteTo(data, addr)
+			if _, ok := msgCache[msg.ID]; !ok && !msg.Response {
+				msg.Response = true
+				data, _ := msg.Pack()
+				conn.WriteTo(data, addr)
+				msgPool.Put(msg)
+			}
 
 		}(addr, conn, msg)
 	}
@@ -180,7 +209,7 @@ func parsefile() {
 	if err != nil {
 		return
 	}
-	cache = make(map[string][4]byte, len(data.Section("hosts").Keys()))
+	cacheHost = make(map[string][4]byte, len(data.Section("hosts").Keys()))
 	for _, s := range data.Section("hosts").Keys() {
 		ip := strings.Split(s.String(), ".")
 		if len(ip) != 4 {
@@ -197,6 +226,6 @@ func parsefile() {
 			}
 			b[i] = byte(num)
 		}
-		cache[s.Name()+"."] = b
+		cacheHost[s.Name()+"."] = b
 	}
 }
