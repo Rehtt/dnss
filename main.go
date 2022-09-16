@@ -120,9 +120,9 @@ func udp() {
 	defer conn.Close()
 	log.Println("udp run")
 	var (
-		buf = make([]byte, 512)
-		//dataChan = channel.New()
+		buf      = make([]byte, 512)
 		msgCache = make(map[uint16]*cache)
+		lock     sync.Mutex
 	)
 
 	for {
@@ -141,6 +141,8 @@ func udp() {
 			// 上游查询的结果
 			if msg.Header.Response {
 				defer msgPool.Put(msg)
+				lock.Lock()
+				defer lock.Unlock()
 				if data, ok := msgCache[msg.ID]; ok {
 					data.msg.Answers = append(data.msg.Answers, msg.Answers...)
 					atomic.AddInt32(data.question, -1)
@@ -174,7 +176,7 @@ func udp() {
 						continue
 					}
 				}
-
+				lock.Lock()
 				// 查询上游服务器
 				c, ok := msgCache[msg.ID]
 				if !ok {
@@ -188,15 +190,19 @@ func udp() {
 				atomic.AddInt32(c.question, 1)
 				queryRemote := *msg
 				queryRemote.Questions = []dnsmessage.Question{msg.Questions[i]}
+				lock.Unlock()
+
 				data, _ := queryRemote.Pack()
 				conn.WriteTo(data, &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
 			}
+			lock.Lock()
 			if _, ok := msgCache[msg.ID]; !ok && !msg.Response {
 				msg.Response = true
 				data, _ := msg.Pack()
 				conn.WriteTo(data, addr)
 				msgPool.Put(msg)
 			}
+			defer lock.Unlock()
 
 		}(addr, conn, msg)
 	}
