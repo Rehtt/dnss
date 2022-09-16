@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"github.com/Rehtt/Kit/link"
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/dns/dnsmessage"
@@ -13,7 +14,8 @@ import (
 )
 
 var (
-	msgPool = sync.Pool{New: func() any {
+	confPath = flag.String("conf", "hosts.ini", "配置文件")
+	msgPool  = sync.Pool{New: func() any {
 		return new(dnsmessage.Message)
 	}}
 	cache = make(map[string][4]byte)
@@ -25,7 +27,7 @@ func init() {
 	if err != nil {
 		log.Fatalln("监听文件失败：", err)
 	}
-	err = watcher.Add("hosts.ini")
+	err = watcher.Add(*confPath)
 	if err != nil {
 		log.Fatalln("监听文件失败：", err)
 	}
@@ -49,6 +51,7 @@ func init() {
 }
 
 func main() {
+	flag.Parse()
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 53})
 	if err != nil {
 		log.Fatalln("监听失败：", err)
@@ -115,7 +118,7 @@ func main() {
 func parsefile() {
 	mu.Lock()
 	defer mu.Unlock()
-	data, err := ini.Load("hosts.ini")
+	data, err := ini.Load(*confPath)
 	if err != nil {
 		return
 	}
