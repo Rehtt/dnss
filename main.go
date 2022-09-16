@@ -92,6 +92,7 @@ func main() {
 					ip, ok := cache[question.Name.String()]
 					mu.RUnlock()
 					if ok {
+						log.Println(addr.String(), "->", question.Name.String(), ip)
 						msg.Answers = append(msg.Answers, dnsmessage.Resource{
 							Header: dnsmessage.ResourceHeader{
 								Name:  question.Name,
