@@ -12,7 +12,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 var (
@@ -109,7 +108,7 @@ func readAll(reader io.Reader) ([]byte, error) {
 type cache struct {
 	msg      *dnsmessage.Message
 	addr     *net.UDPAddr
-	question *int32
+	question int
 }
 
 func udp() {
@@ -121,7 +120,7 @@ func udp() {
 	log.Println("udp run")
 	var (
 		buf      = make([]byte, 512)
-		msgCache = make(map[uint16]*cache)
+		msgCache = make(map[uint16]cache)
 		lock     sync.Mutex
 	)
 
@@ -145,19 +144,20 @@ func udp() {
 				defer lock.Unlock()
 				if data, ok := msgCache[msg.ID]; ok {
 					data.msg.Answers = append(data.msg.Answers, msg.Answers...)
-					atomic.AddInt32(data.question, -1)
-					if atomic.LoadInt32(data.question) == 0 {
+					data.question -= 1
+					if data.question == 0 {
 						dnsData, _ := data.msg.Pack()
 						data.msg.Response = true
 						conn.WriteTo(dnsData, data.addr)
 						delete(msgCache, msg.ID)
 						return
 					}
+					msgCache[msg.ID] = data
 				}
 				return
 			}
 
-			for i, question := range msg.Questions {
+			for _, question := range msg.Questions {
 				switch question.Type {
 				case dnsmessage.TypeA:
 					mu.RLock()
@@ -180,17 +180,18 @@ func udp() {
 				// 查询上游服务器
 				c, ok := msgCache[msg.ID]
 				if !ok {
-					c = &cache{
+					c = cache{
 						msg:      msg,
 						addr:     addr,
-						question: new(int32),
+						question: 1,
 					}
-					msgCache[msg.ID] = c
+				} else {
+					c.question += 1
 				}
-				atomic.AddInt32(c.question, 1)
-				queryRemote := *msg
-				queryRemote.Questions = []dnsmessage.Question{msg.Questions[i]}
+				msgCache[msg.ID] = c
 				lock.Unlock()
+				queryRemote := *msg
+				queryRemote.Questions = []dnsmessage.Question{question}
 
 				data, _ := queryRemote.Pack()
 				conn.WriteTo(data, &net.UDPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})

@@ -3,7 +3,6 @@ module github.com/Rehtt/dnss
 go 1.19
 
 require (
-	github.com/Rehtt/Kit v0.0.0-20220915090355-120c3bc68ec4
 	github.com/fsnotify/fsnotify v1.5.4
 	golang.org/x/net v0.0.0-20220909164309-bea034e7d591
 	gopkg.in/ini.v1 v1.67.0
