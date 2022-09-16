@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"github.com/Rehtt/Kit/link"
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/net/dns/dnsmessage"
 	"gopkg.in/ini.v1"
+	"io"
 	"log"
 	"net"
 	"strconv"
@@ -52,12 +54,65 @@ func init() {
 
 func main() {
 	flag.Parse()
+	go udp()
+	tcp()
+}
+func tcp() {
+	l, err := net.ListenTCP("tcp", &net.TCPAddr{Port: 53})
+	if err != nil {
+		log.Fatalln("tcp监听失败：", err)
+	}
+	defer l.Close()
+	log.Println("tcp run")
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			continue
+		}
+		data, err := readAll(conn)
+		if err != nil {
+			continue
+		}
+		// 暂时不对tcp解包，直接转发
+		// 查询上游服务器
+		rconn, err := net.DialTCP("tcp", nil, &net.TCPAddr{IP: net.IP{8, 8, 8, 8}, Port: 53})
+		if err != nil {
+			log.Println("tcp r1 err:", err)
+			return
+		}
+		rconn.Write(data)
+		data, err = readAll(rconn)
+		if err != nil {
+			log.Println("tcp r2 err:", err)
+			return
+		}
+		rconn.Close()
+		conn.Write(data)
+		conn.Close()
+	}
+}
+func readAll(reader io.Reader) ([]byte, error) {
+	var out bytes.Buffer
+	buf := make([]byte, 512)
+	for {
+		n, err := reader.Read(buf)
+		if err != nil {
+			return nil, err
+		}
+		out.Write(buf[:n])
+		if n < 512 {
+			return out.Bytes(), nil
+		}
+	}
+}
+
+func udp() {
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: 53})
 	if err != nil {
-		log.Fatalln("监听失败：", err)
+		log.Fatalln("udp监听失败：", err)
 	}
 	defer conn.Close()
-	log.Println("run")
+	log.Println("udp run")
 	var (
 		buf   = make([]byte, 512)
 		addrs = link.NewDLink()
@@ -69,7 +124,6 @@ func main() {
 			continue
 		}
 		msg := msgPool.Get().(*dnsmessage.Message)
-
 		if err = msg.Unpack(buf[:n]); err != nil {
 			log.Println("dns unpack err:", err)
 			continue
